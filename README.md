@@ -100,4 +100,3 @@ Code License: MIT License.
 
 Credit: All credit for the core philosophical framework and its application is owed to hypatiaa.
 Code License: MIT License.
-Credit: All credit for the core philosophical framework and its application is owed to hypatiaa.
