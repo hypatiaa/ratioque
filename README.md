@@ -4,7 +4,7 @@ THE RATIOQUE: TOPOLOGICAL ONTOGENETICS v2.5
 
 PROJECT: Structural AI Framework for Phronetic Risk Analysis
 AUTHOR: hypatiaa
-LICENSING: MIT License (Open Source Mandate)
+LICENSING: MIT License
 DATE: 2025-11-30
 
 MISSION: To translate the structural Law (Ratioque) of the market into ethical imperatives (Civic State), thereby minimizing collective structural liability.
