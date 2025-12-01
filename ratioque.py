@@ -1,7 +1,7 @@
 """
 THE RATIOQUE: TOPOLOGICAL ONTOGENETICS v2.5
 ================================================================================
-Author: hypatiaa -- MIT License Copyright 2025
+Author: hypatiaa -- MIT License copyright 2025
 Classification: Corporate Integrity Monitor / Civic Phronesis
 Philosophical Basis: "Naturae species ratioque" (Lucretius) + "Eichinvarianz" (Weyl)
 
