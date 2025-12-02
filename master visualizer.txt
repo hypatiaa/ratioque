@@ -1,0 +1,368 @@
+"""
+RATIOQUE DASHBOARD GENERATOR v3.7
+================================================================================
+PROJECT:        Ratioque - Structural Risk & Environment Engine
+AUTHOR:         Robin Miller
+OUTPUT:         High-Resolution PNG (Default 300 DPI)
+LICENSE:	MIT License
+
+
+DESCRIPTION:
+Generates the "Civic Dashboard" visualization for the Ratioque Living System Model.
+Includes:
+1. Price Chart with Dual-Pathway Color Scheme (Driving vs. Healing)
+2. Civic Regime Ribbon (Green/Yellow/Orange/Red)
+3. Nervous System Chart (Tension vs Agitation)
+4. Lattice Habitat Chart (Structure vs Volatility)
+================================================================================
+"""
+
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import matplotlib.dates as mdates
+from dataclasses import dataclass
+from matplotlib.lines import Line2D
+import sys
+import os
+import argparse
+
+# ============================================================================
+# CONFIGURATION & KERNEL
+# ============================================================================
+
+@dataclass
+class KernelConfig:
+    """Physical constants for the Ratioque living system."""
+    N_BASE: float = 720.0
+    GAUGE_STIFFNESS: float = 2.0
+    BASE_HALF_LIFE: float = 20.0
+    TRAUMA_SENSITIVITY: float = 10.0
+    VOL_WINDOW: int = 14
+    PHI_WINDOW: int = 126
+    PHI: float = 1.618033988749895
+
+class RatioqueKernel:
+    """Vectorized mathematical engine."""
+    
+    @staticmethod
+    def calculate_rolling_phi(signal: np.ndarray, window: int = 126) -> float:
+        if len(signal) < window:
+            window = max(50, len(signal) // 2)
+        rolling_stdev = pd.Series(signal).rolling(window, min_periods=20).std()
+        median_stdev = rolling_stdev.median()
+        if pd.isna(median_stdev) or median_stdev < 1e-6:
+            median_stdev = signal.std() if signal.std() > 0 else 1.0
+        phi = max(1.0, median_stdev * 2.0)
+        return phi
+
+    @staticmethod
+    def gauge_potential_vectorized(volatility: np.ndarray, k: float = 2.0) -> np.ndarray:
+        return np.log1p(k * volatility)
+
+    @staticmethod
+    def local_lattice_vectorized(gauge: np.ndarray, base: float = 720.0) -> np.ndarray:
+        return base * np.exp(gauge)
+
+    @staticmethod
+    def calculate_adaptive_decay(n_instant: np.ndarray, n_prev: float, vol_z: float,
+                                  base_half_life: float = 20.0, 
+                                  trauma_sensitivity: float = 10.0) -> float:
+        current_n = n_instant[-1]
+        if current_n > n_prev:
+            return current_n
+        else:
+            z_score = max(0, vol_z)
+            adaptive_half_life = base_half_life + (trauma_sensitivity * z_score)
+            decay_factor = np.exp(-np.log(2) / adaptive_half_life)
+            return current_n + (n_prev - current_n) * decay_factor
+
+    @staticmethod
+    def vernier_shear_vectorized(n_effective: np.ndarray, n_instant: np.ndarray,
+                                   base: float = 720.0) -> np.ndarray:
+        delta = n_effective - n_instant
+        phase_diff = (2 * np.pi * delta) / base
+        return np.sin(phase_diff)
+
+    @staticmethod
+    def calculate_coherence_vectorized(signal: np.ndarray, n_effective: np.ndarray, 
+                                       volume: np.ndarray, phi: float,
+                                       tolerance: float = 0.02) -> np.ndarray:
+        target_base = n_effective / phi
+        target_fifth = target_base * 1.5
+        target_octave = target_base * 2.0
+        
+        epsilon = tolerance * signal
+        
+        match_base = np.abs(signal - target_base) < epsilon
+        match_fifth = np.abs(signal - target_fifth) < epsilon
+        match_octave = np.abs(signal - target_octave) < epsilon
+        
+        vol_norm = (volume - volume.min()) / (volume.max() - volume.min() + 1e-9)
+        coherence_raw = (match_base * 1.0 + match_fifth * 0.5 + match_octave * 0.3)
+        return coherence_raw * (1 + vol_norm * 0.5)
+
+    @staticmethod
+    def calculate_tension_vectorized(shear: np.ndarray, trauma_load: np.ndarray,
+                                     drift: np.ndarray, trauma_max: float = 100.0) -> np.ndarray:
+        trauma_norm = np.clip(trauma_load / trauma_max, 0, 1)
+        tension = 0.4 * np.abs(shear) + 0.4 * trauma_norm + 0.2 * drift
+        return np.clip(tension, 0, 1)
+
+    @staticmethod
+    def calculate_agitation(high: np.ndarray, low: np.ndarray, close: np.ndarray,
+                            window: int = 14) -> np.ndarray:
+        intraday_range = (high - low) / (close + 1e-9)
+        rolling_mean = pd.Series(intraday_range).rolling(window, min_periods=5).mean()
+        rolling_std = pd.Series(intraday_range).rolling(window, min_periods=5).std()
+        agitation = (intraday_range - rolling_mean) / (rolling_std + 1e-9)
+        agitation = np.clip(agitation, -3, 3) / 3.0
+        agitation = (agitation + 1) / 2.0
+        return agitation.values
+
+class RatioqueProcessor:
+    def __init__(self, config=None):
+        self.config = config or KernelConfig()
+
+    def process(self, df: pd.DataFrame) -> pd.DataFrame:
+        df = df.copy()
+        
+        # Base metrics
+        df['returns'] = df['close'].pct_change()
+        df['volatility'] = df['returns'].rolling(self.config.VOL_WINDOW, min_periods=5).std()
+        df['volatility'] = df['volatility'].bfill().fillna(df['volatility'].mean())
+
+        # Signal calibration
+        df['signal'] = df['close']
+        phi = RatioqueKernel.calculate_rolling_phi(df['signal'].values, self.config.PHI_WINDOW)
+        df['phi'] = phi
+
+        # Gauge & Lattice
+        df['gauge'] = RatioqueKernel.gauge_potential_vectorized(df['volatility'].values, self.config.GAUGE_STIFFNESS)
+        df['n_instant'] = RatioqueKernel.local_lattice_vectorized(df['gauge'].values, self.config.N_BASE)
+
+        # Trauma Memory
+        df['vol_z'] = (df['volatility'] - df['volatility'].rolling(60, min_periods=10).mean()) / \
+                      (df['volatility'].rolling(60, min_periods=10).std() + 1e-9)
+        df['vol_z'] = df['vol_z'].fillna(0)
+
+        n_effective = np.zeros(len(df))
+        n_effective[0] = df['n_instant'].iloc[0]
+
+        for i in range(1, len(df)):
+            n_effective[i] = RatioqueKernel.calculate_adaptive_decay(
+                df['n_instant'].values[:i+1],
+                n_effective[i-1],
+                df['vol_z'].iloc[i],
+                self.config.BASE_HALF_LIFE,
+                self.config.TRAUMA_SENSITIVITY
+            )
+        
+        df['n_effective'] = n_effective
+        df['trauma_load'] = df['n_effective'] - df['n_instant']
+
+        # Topological
+        df['shear'] = RatioqueKernel.vernier_shear_vectorized(
+            df['n_effective'].values, df['n_instant'].values, self.config.N_BASE
+        )
+
+        # Holographic
+        df['target_base'] = df['n_effective'] / self.config.PHI
+        df['target_fifth'] = df['target_base'] * 1.5
+        df['target_octave'] = df['target_base'] * 2.0
+
+        # Coherence
+        df['coherence'] = RatioqueKernel.calculate_coherence_vectorized(
+            df['signal'].values, df['n_effective'].values, df['volume'].values, phi
+        )
+
+        # RSI & Drift
+        df['rsi'] = self._calculate_rsi(df['close'])
+        df['drift'] = np.abs(df['rsi'] - 50) / 50.0
+
+        # Tension & Agitation
+        df['tension'] = RatioqueKernel.calculate_tension_vectorized(
+            df['shear'].values, df['trauma_load'].values, df['drift'].values
+        )
+        df['agitation'] = RatioqueKernel.calculate_agitation(
+            df['high'].values, df['low'].values, df['close'].values
+        )
+
+        # Regime (Classification for Ribbon)
+        df['regime_label'] = self._classify_regime(df['shear'].values)
+        
+        return df
+
+    def _calculate_rsi(self, close: pd.Series, period: int = 14) -> pd.Series:
+        delta = close.diff()
+        gain = (delta.where(delta > 0, 0)).rolling(window=period, min_periods=5).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=period, min_periods=5).mean()
+        rs = gain / (loss + 1e-9)
+        rsi = 100 - (100 / (1 + rs))
+        return rsi.fillna(50)
+
+    def _classify_regime(self, shear: np.ndarray) -> np.ndarray:
+        abs_shear = np.abs(shear)
+        p50 = np.percentile(abs_shear, 50)
+        p75 = np.percentile(abs_shear, 75)
+        p90 = np.percentile(abs_shear, 90)
+        
+        regime = np.where(abs_shear < p50, 'GREEN',
+                 np.where(abs_shear < p75, 'YELLOW',
+                 np.where(abs_shear < p90, 'ORANGE', 'RED')))
+        return regime
+
+# ============================================================================
+# EXECUTION & PLOTTING FUNCTION
+# ============================================================================
+
+def generate_dashboard(csv_file: str, output_file: str = None, dpi: int = 300):
+    print(f"Processing {csv_file} with DPI={dpi}...")
+    
+    # 1. Load Data
+    try:
+        df = pd.read_csv(csv_file)
+        df.columns = df.columns.str.lower().str.strip()
+        if 'date' in df.columns:
+            df['date'] = pd.to_datetime(df['date'])
+        
+        # Derive Dataset Name from filename
+        dataset_name = os.path.splitext(os.path.basename(csv_file))[0].replace('_', ' ').upper()
+        
+    except Exception as e:
+        print(f"Error loading file: {e}")
+        return
+
+    # 2. Process Data
+    processor = RatioqueProcessor()
+    results = processor.process(df)
+
+    # 3. Prepare Colors
+    # State: Expanding vs Contracting
+    results['state'] = np.where(results['trauma_load'] > 1e-3, 'CONTRACTING', 'EXPANDING')
+
+    # Intensity: Based on Shear Percentiles (3 Tiers)
+    abs_shear = np.abs(results['shear'])
+    p50 = np.percentile(abs_shear, 50)
+    p85 = np.percentile(abs_shear, 85)
+
+    results['intensity'] = np.where(abs_shear < p50, 'LOW',
+                           np.where(abs_shear < p85, 'MID', 'HIGH'))
+
+    # Assign Price Colors
+    def get_price_color(row):
+        if row['state'] == 'EXPANDING':
+            if row['intensity'] == 'LOW': return '#0000FF' # Blue
+            if row['intensity'] == 'MID': return '#00FF00' # Green
+            if row['intensity'] == 'HIGH': return '#FF0000' # Red
+        else: # CONTRACTING
+            if row['intensity'] == 'LOW': return '#00FFFF' # Cyan
+            if row['intensity'] == 'MID': return '#FFFF00' # Yellow
+            if row['intensity'] == 'HIGH': return '#FF00FF' # Magenta
+        return '#FFFFFF'
+
+    results['price_color'] = results.apply(get_price_color, axis=1)
+
+    # Regime Colors
+    regime_colors = {'GREEN': '#00ff00', 'YELLOW': '#ffff00', 'ORANGE': '#ff9900', 'RED': '#ff0000'}
+    results['regime_color'] = results['regime_label'].map(regime_colors)
+
+    # 4. Visualization
+    plt.style.use('dark_background')
+    
+    # Setup High-Res Dimensions (24x28 inch)
+    fig_width = 24
+    fig_height = 28
+    
+    fig, (ax1, ax_ribbon, ax2, ax3) = plt.subplots(4, 1, figsize=(fig_width, fig_height), 
+                                                   gridspec_kw={'height_ratios': [4, 0.4, 1.5, 1.5], 'hspace': 0.15})
+
+    # --- PLOT 1: PRICE (Dual-Pathway) ---
+    for i in range(1, len(results)):
+        c = results['price_color'].iloc[i]
+        ax1.plot(results['date'].iloc[i-1:i+1], results['close'].iloc[i-1:i+1], color=c, linewidth=2.5)
+
+    # HEADER MODIFICATION: Strictly Dataset Name and Software Version
+    ax1.set_title(f"{dataset_name} | Ratioque v3.7", 
+                  fontsize=32, color='white', pad=20, weight='bold')
+                  
+    ax1.set_ylabel('PRICE ($)', fontsize=20, weight='bold')
+    ax1.tick_params(axis='both', which='major', labelsize=14)
+    ax1.grid(True, alpha=0.15, linestyle='--')
+
+    # Legend for Price
+    price_legend = [
+        Line2D([0], [0], color='#0000FF', lw=4, label='DRIVING (Low/Blue)'),
+        Line2D([0], [0], color='#00FF00', lw=4, label='DRIVING (Mid/Green)'),
+        Line2D([0], [0], color='#FF0000', lw=4, label='DRIVING (High/Red)'),
+        Line2D([0], [0], color='#00FFFF', lw=4, label='HEALING (Low/Cyan)'),
+        Line2D([0], [0], color='#FFFF00', lw=4, label='HEALING (Mid/Yellow)'),
+        Line2D([0], [0], color='#FF00FF', lw=4, label='HEALING (High/Magenta)'),
+    ]
+    ax1.legend(handles=price_legend, loc='upper left', fontsize=16, ncol=2, framealpha=0.8)
+
+    # --- PLOT 2: CIVIC RIBBON (Regime Scanner) ---
+    ax_ribbon.bar(results['date'], height=1, width=1.5, color=results['regime_color'], edgecolor='none', align='center')
+    ax_ribbon.set_yticks([])
+    ax_ribbon.set_ylabel('REGIME', fontsize=16, rotation=0, labelpad=40, va='center', weight='bold')
+    ax_ribbon.set_xlim(ax1.get_xlim())
+    ax_ribbon.grid(False)
+
+    # Legend for Ribbon
+    ribbon_legend = [Line2D([0], [0], color=c, lw=8, label=l) for l, c in regime_colors.items()]
+    ax_ribbon.legend(handles=ribbon_legend, loc='center left', bbox_to_anchor=(1.01, 0.5), fontsize=16, title="TOPOLOGY", title_fontsize=16)
+
+    # --- PLOT 3: STRESS (Tension & Agitation) ---
+    ax2.plot(results['date'], results['tension'], color='#ff33cc', label='TENSION (Structure)', linewidth=3)
+    ax2.plot(results['date'], results['agitation'], color='#33ccff', label='AGITATION (Nerves)', linewidth=2, alpha=0.8)
+
+    ax2.axhline(0.7, color='red', linestyle='--', alpha=0.5, linewidth=2)
+    ax2.axhline(0.3, color='green', linestyle='--', alpha=0.5, linewidth=2)
+    ax2.text(results['date'].iloc[0], 0.72, 'CRITICAL TENSION', color='red', fontsize=12, alpha=0.7)
+    ax2.text(results['date'].iloc[0], 0.32, 'RELAXED STATE', color='green', fontsize=12, alpha=0.7)
+
+    ax2.set_ylabel('STRESS LEVEL', fontsize=20, weight='bold')
+    ax2.legend(loc='upper right', fontsize=16)
+    ax2.grid(True, alpha=0.2)
+    ax2.set_xlim(ax1.get_xlim())
+    ax2.tick_params(axis='both', which='major', labelsize=14)
+
+    # --- PLOT 4: LATTICE (Habitat) ---
+    ax3.plot(results['date'], results['n_effective'], color='white', label='N_EFFECTIVE (Memory)', linewidth=2)
+    ax3.fill_between(results['date'], results['n_effective'], results['n_instant'], 
+                     where=(results['trauma_load'] > 1e-3), color='#FF00FF', alpha=0.3, label='HEALING PHASE')
+    ax3.fill_between(results['date'], results['n_effective'].min(), results['n_effective'].max(), 
+                     where=(results['trauma_load'] <= 1e-3), 
+                     color='#0000FF', alpha=0.1, label='DRIVING PHASE')
+
+    ax3.set_ylabel('LATTICE SIZE (N)', fontsize=20, weight='bold')
+    ax3.set_xlabel('DATE', fontsize=20, weight='bold')
+    ax3.legend(loc='upper right', fontsize=16)
+    ax3.grid(True, alpha=0.2)
+    ax3.set_xlim(ax1.get_xlim())
+    ax3.tick_params(axis='both', which='major', labelsize=14)
+
+    # Watermark / Footer
+    plt.figtext(0.5, 0.01, '"Naturae species ratioque" - The Appearance and the Reason', 
+                ha='center', fontsize=18, color='gray', style='italic')
+
+    plt.tight_layout()
+    
+    if not output_file:
+        output_file = f"{dataset_name.replace(' ', '_')}_Ratioque_Dashboard.png"
+        
+    plt.savefig(output_file, dpi=dpi)
+    print(f"Dashboard generated successfully: {output_file} at {dpi} DPI")
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description='Ratioque Dashboard Generator')
+    parser.add_argument('csv_file', nargs='?', default='pltr_us_d.csv', help='Path to the input CSV file')
+    parser.add_argument('--dpi', type=int, default=300, help='Output resolution in DPI (default: 300)')
+    parser.add_argument('--output', type=str, default=None, help='Output filename')
+
+    args = parser.parse_args()
+    
+    if os.path.exists(args.csv_file):
+        generate_dashboard(args.csv_file, output_file=args.output, dpi=args.dpi)
+    else:
+        print(f"File not found: {args.csv_file}")
